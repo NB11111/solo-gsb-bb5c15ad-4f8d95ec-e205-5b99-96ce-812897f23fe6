@@ -12,18 +12,19 @@
       <span class="logo">❄</span>
       <div>
         <h1>冷链装箱温控规划器</h1>
-        <p>按温区兼容、容量约束、累计热暴露预算与锁温区段自动生成分箱方案</p>
+        <p>按温区兼容、容量约束、累计热暴露预算与锁温区段自动生成分箱方案,支持单温区故障容灾评估</p>
       </div>
     </div>
     <div class="actions">
       <button id="btnSample" type="button" class="btn btn-ghost">载入示例</button>
+      <button id="btnResilience" type="button" class="btn btn-ghost">🛡 容灾评估</button>
       <button id="btnPlan" type="button" class="btn btn-primary">▶ 生成分箱方案</button>
     </div>
   </header>
 
   <main class="layout">
     <!-- ============ 输入区 ============ -->
-    <section class="panel input-panel">
+    <section class="panel input-panel" id="inputPanel">
       <h2>运输与箱体参数</h2>
       <div class="grid-4">
         <label id="transportHoursField">运输时长 (h)
@@ -105,6 +106,35 @@
 
         <h3 id="unloadedTitle" class="conflict-title" hidden>未能装载的货物与冲突原因</h3>
         <div id="unloaded" class="unloaded-list"></div>
+      </div>
+
+      <!-- ============ 单温区故障容灾评估 ============ -->
+      <div id="resilienceView" hidden>
+        <h3>温区故障容灾评估
+          <span id="resilienceStale" class="badge badge-warn" hidden>⚠ 输入已变化,评估结果已过期</span>
+        </h3>
+        <div id="resilienceMeta" class="resilience-meta"></div>
+        <div id="riskSummary" class="risk-summary"></div>
+        <div class="table-wrap">
+          <table class="risk-matrix">
+            <thead>
+              <tr>
+                <th>风险</th>
+                <th>运输段</th>
+                <th>模拟不可用温区</th>
+                <th>仍可运输</th>
+                <th class="num">新增未装件数</th>
+                <th class="num">额外箱数</th>
+                <th>首个冲突原因</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="riskRows"></tbody>
+          </table>
+        </div>
+        <p class="muted">每个场景将对应温区模拟为不可用后,复用完整装箱、锁温与热暴露规则
+          重新规划,基准方案不受影响;场景按新增未装件数、额外箱数、段序号、温区序稳定排序,
+          点击「基准差异」可展开与基准方案的对比。</p>
       </div>
 
       <div id="errorBox" class="error-box" hidden></div>

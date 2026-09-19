@@ -359,6 +359,90 @@ table.seg-checks tr.seg-bad td:first-child { color: var(--err); font-weight: 700
   font-weight: 600;
 }
 
+/* ---------- 容灾评估风险矩阵 ---------- */
+.badge-warn { background: var(--warn-bg); color: var(--warn); }
+#resilienceStale { margin-left: 8px; }
+#resilienceView.stale .resilience-meta,
+#resilienceView.stale .risk-summary,
+#resilienceView.stale .risk-matrix,
+#resilienceView.stale .muted { opacity: 0.55; }
+
+.resilience-meta { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
+.resilience-meta code {
+  background: var(--ice);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 11.5px;
+}
+
+.risk-summary { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+.risk-chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  background: #fafcfe;
+}
+.risk-chip.risk-high { background: var(--err-bg); color: var(--err); border-color: #f0cdc9; }
+.risk-chip.risk-medium { background: var(--warn-bg); color: var(--warn); border-color: #eed9a8; }
+.risk-chip.risk-low { background: var(--ok-bg); color: var(--ok); border-color: #bfe6cf; }
+
+table.risk-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+table.risk-matrix th, table.risk-matrix td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  vertical-align: middle;
+}
+table.risk-matrix th {
+  background: #f4f8fc;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+tr.risk-row.risk-high td { background: #fff8f7; }
+tr.risk-row.risk-medium td { background: #fffdf4; }
+
+.risk-badge {
+  display: inline-block;
+  padding: 1px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+.risk-badge.risk-high { background: var(--err-bg); color: var(--err); }
+.risk-badge.risk-medium { background: var(--warn-bg); color: var(--warn); }
+.risk-badge.risk-low { background: var(--ok-bg); color: var(--ok); }
+
+.reason-cell {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+tr.risk-detail td { background: #fafcfe; padding: 10px 14px; }
+.diff-grid { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 8px; }
+.diff-grid .k, .diff-block .k {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+  margin-right: 6px;
+}
+.diff-block { margin-top: 6px; }
+.diff-block .k { display: block; margin-bottom: 2px; }
+.diff-list { margin: 4px 0 0; padding-left: 18px; }
+.diff-list li { margin: 2px 0; }
+
 .foot {
   text-align: center;
   color: var(--muted);

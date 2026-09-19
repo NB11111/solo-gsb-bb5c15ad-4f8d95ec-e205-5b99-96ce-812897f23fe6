@@ -11,6 +11,10 @@
 **相邻且同组的段必须共用一个设定点**——共享设定点取自各段可行温度段（可能不连续）
 交集保留的真实区间，结合组前累计热暴露，选取使整组结束时箱内最大预算使用率最低的点，
 平局取较低温度；不存在共享设定点时拒绝该装箱组合，并报告首个失败组及涉及段。
+支持 **单温区故障容灾评估**：基于当前输入快照，把每个运输段的每个可用温区分别模拟为
+不可用，复用完整装箱、锁温与热暴露规则重新规划（基准方案不受影响），以 **风险矩阵**
+展示每个故障场景是否仍可运输、额外箱数、由已装载变为未装载的批次与件数及首个冲突原因，
+可展开查看与基准方案的差异；输入变化后旧评估结果自动标记为 **已过期**。
 支持在页面上随时修改输入并重新规划。
 
 - 后端：FastAPI（规划算法见 `app/planner.py`，无外部数据库依赖）
@@ -48,6 +52,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | 规划器页面 | <http://localhost:8000/> |
 | 健康检查 | <http://localhost:8000/api/health> |
 | 规划接口 | `POST http://localhost:8000/api/plan` |
+| 容灾评估接口 | `POST http://localhost:8000/api/resilience` |
 | Swagger 接口文档 | <http://localhost:8000/docs> |
 
 ## 三、配置
@@ -93,6 +98,17 @@ APP_PORT=9000 docker compose up -d --build
    可快速体验分段运输（示例包含首段不兼容、末段不兼容、运输超时、
    热暴露预算不足、容量不足等多种冲突，并将「干线冷链 + 支线转运」
    划入同一锁温组「干线锁温」）。
+6. 点击 **「🛡 容灾评估」** 对当前输入做 **单温区故障容灾评估**：
+   - 系统把 **每个运输段的每个可用温区** 分别模拟为不可用（单点故障），
+     复用完整装箱、锁温与热暴露规则重新规划，**基准方案不受影响**；
+   - 结果以 **风险矩阵** 展示：每个场景一行，含风险等级（🔴 高 / 🟡 中 / 🟢 低）、
+     运输段、模拟不可用的温区、是否仍可运输、**新增未装件数**、**额外箱数**
+     与 **首个冲突原因**，按 新增未装件数 ↓、额外箱数 ↓、段序号 ↑、温区序 ↑
+     稳定排序；
+   - 点击每行 **「基准差异」** 可展开与基准方案的对比：箱数 / 已装件数 /
+     未装件数变化、**由已装载变为未装载的批次与件数** 明细及完整冲突原因；
+   - 评估 **绑定同一输入快照**（结果区显示快照指纹）；此后任何输入变化，
+     旧评估结果自动标记为 **「已过期」** 并置灰，重新评估即可刷新。
 
 ## 五、规划规则
 
@@ -133,7 +149,23 @@ APP_PORT=9000 docker compose up -d --build
 - 运输时长超过货物「最长运输时长」时，该批整批不予装载并给出原因；
 - 达到最大箱数或单件体积超过单箱容量时，剩余货物按冲突输出。
 
-## 六、接口示例
+## 六、单温区故障容灾评估规则
+
+- 评估基于 **触发时的同一份输入快照**：先按完整规则算出 **基准方案**，
+  随后把 **每个运输段的每个可用温区** 分别模拟为不可用（每次只失效一个温区），
+  复用完整装箱、锁温与热暴露规则重新规划；**基准方案本身不被改动**；
+- 每个故障场景返回：**是否仍可运输**（全部装载且每箱全程逐段通过）、
+  **额外箱数**（场景箱数 − 基准箱数，向下取 0）、**由已装载变为未装载的
+  批次与件数**（基准已装 > 场景已装的差值部分）、**首个冲突原因**
+  （场景重新规划后首条未装载原因；无冲突时为 `null`）；
+- 某温区是其所属运输段的 **唯一温区** 时，该温区失效后整段不再有任何可用温区，
+  全部货物均无法通过该段，场景直接判定为不可运输；
+- 场景按 **新增未装件数降序、额外箱数降序、段序号升序、温区序升序** 稳定排序；
+- 风险等级：有批次由已装变为未装 = **高**；仅箱数增加 = **中**；其余 = **低**；
+- 响应携带 **输入快照指纹**（`input_fingerprint`），前端据此把评估结果绑定到
+  该快照，输入一旦变化即将旧结果标记为 **已过期**。
+
+## 七、接口示例
 
 ### 单一温区模式（兼容原有调用）
 
@@ -301,6 +333,93 @@ curl -X POST http://localhost:8000/api/plan \
 }
 ```
 
+### 单温区故障容灾评估
+
+`POST /api/resilience` 接收与 `/api/plan` **完全相同的请求体**，返回基准方案摘要
+与逐温区故障场景列表（已按 新增未装件数 ↓、额外箱数 ↓、段序号 ↑、温区序 ↑ 排序）：
+
+```bash
+curl -X POST http://localhost:8000/api/resilience \
+  -H "Content-Type: application/json" \
+  -d '{
+    "box_capacity": 12,
+    "segments": [
+      {"name": "干线冷链", "hours": 14,
+       "zones": [{"name": "冷冻区", "t_min": -18, "t_max": -2},
+                 {"name": "冷藏区", "t_min": 0, "t_max": 8}]},
+      {"name": "末端配送", "hours": 4,
+       "zones": [{"name": "冷藏区", "t_min": 0, "t_max": 8},
+                 {"name": "常温区", "t_min": 15, "t_max": 25}]}
+    ],
+    "cargoes": [
+      {"name": "三文鱼", "units": 10, "unit_volume": 0.4, "t_min": -2, "t_max": 2},
+      {"name": "冷冻牛排", "units": 5, "unit_volume": 0.8, "t_min": -22, "t_max": -15}
+    ]
+  }'
+```
+
+响应（节选，共 4 个场景；「末端配送 · 冷藏区」失效影响最大，排在最前）：
+
+```json
+{
+  "input_fingerprint": "e02f54a595d0",
+  "baseline": {
+    "boxes_used": 1, "loaded_units": 10, "unloaded_units": 5,
+    "total_cargo_units": 15, "all_transportable": false,
+    "transport_hours": 18.0, "segment_mode": true
+  },
+  "scenarios": [
+    {
+      "segment_no": 2, "segment_name": "末端配送",
+      "zone_index": 1, "zone_name": "冷藏区",
+      "zone": {"name": "冷藏区", "t_min": 0.0, "t_max": 8.0},
+      "still_transportable": false,
+      "boxes_used": 0, "extra_boxes": 0,
+      "loaded_units": 0, "unloaded_units": 15,
+      "newly_unloaded_units": 10,
+      "newly_unloaded": [
+        {"batch_no": 1, "name": "三文鱼", "units": 10,
+         "baseline_loaded_units": 10, "scenario_loaded_units": 0}
+      ],
+      "first_conflict_reason": "运输段「末端配送」(第 2 段,4.0h)的可用温区 (常温区) 与允许温区 [-22.0, -15.0]℃ 均无交集,全程温度无法保证",
+      "risk_level": "high"
+    },
+    {
+      "segment_no": 1, "segment_name": "干线冷链",
+      "zone_index": 1, "zone_name": "冷冻区",
+      "zone": {"name": "冷冻区", "t_min": -18.0, "t_max": -2.0},
+      "still_transportable": false,
+      "boxes_used": 1, "extra_boxes": 0,
+      "loaded_units": 10, "unloaded_units": 5,
+      "newly_unloaded_units": 0,
+      "newly_unloaded": [],
+      "first_conflict_reason": "运输段「干线冷链」(第 1 段,14.0h)的可用温区 (冷藏区) 与允许温区 [-22.0, -15.0]℃ 均无交集,全程温度无法保证",
+      "risk_level": "low"
+    }
+  ]
+}
+```
+
+「末端配送」的冷藏区失效后，三文鱼在该段只剩常温区 [15,25]℃ 可用，整批 10 件
+由已装载变为未装载（`risk_level: high`）；而「干线冷链」的冷冻区失效不影响已装载
+货物（牛排本就因末端段无冷冻温区而未装载），仅首条冲突原因变化（`risk_level: low`）。
+
+容灾评估响应字段：
+
+| 字段 | 说明 |
+| --- | --- |
+| `input_fingerprint` | 输入快照指纹（规范化 JSON 的 SHA-256 前 12 位），评估结果绑定该快照；输入变化后前端将旧结果标记为已过期 |
+| `baseline` | 基准方案摘要：箱数、已装/未装件数、总件数、`all_transportable`、总时长、是否分段模式 |
+| `scenarios[]` | 逐温区故障场景，按 新增未装件数 ↓、额外箱数 ↓、段序号 ↑、温区序 ↑ 稳定排序 |
+| `scenarios[].segment_no` / `segment_name` | 被模拟故障的运输段序号与名称 |
+| `scenarios[].zone_index` / `zone_name` / `zone` | 被模拟不可用的温区序号（段内从 1 开始）、名称与完整定义 |
+| `scenarios[].still_transportable` | 该场景下是否仍可运输（全部装载且每箱全程逐段通过） |
+| `scenarios[].boxes_used` / `extra_boxes` | 场景箱数与相对基准的额外箱数（向下取 0） |
+| `scenarios[].loaded_units` / `unloaded_units` | 场景下的已装 / 未装件数 |
+| `scenarios[].newly_unloaded_units` / `newly_unloaded[]` | 由已装载变为未装载的总件数与明细（批号、名称、新增未装件数、基准/场景已装件数） |
+| `scenarios[].first_conflict_reason` | 该场景重新规划后的首个冲突原因；无冲突时为 `null` |
+| `scenarios[].risk_level` | 风险等级：`high`（有批次由已装变为未装）/ `medium`（仅箱数增加）/ `low`（其余） |
+
 ### 响应字段（新增部分）
 
 | 字段 | 说明 |
@@ -333,13 +452,14 @@ curl -X POST http://localhost:8000/api/plan \
 }
 ```
 
-## 七、项目结构
+## 八、项目结构
 
 ```
 .
 ├── app/
 │   ├── main.py        # FastAPI 入口与静态资源挂载
 │   ├── planner.py     # 温区兼容 + 容量约束 + 热暴露预算 + 锁温区段分箱算法
+│   ├── resilience.py  # 单温区故障容灾评估(逐温区模拟故障并复用完整规则重规划)
 │   └── schemas.py     # 请求模型
 ├── static/
 │   ├── index.html     # 单页前端

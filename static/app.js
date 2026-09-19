@@ -126,7 +126,10 @@ function renumberSegments() {
   });
 }
 
-$("btnAddSegment").addEventListener("click", () => addSegmentCard());
+$("btnAddSegment").addEventListener("click", () => {
+  addSegmentCard();
+  refreshResilienceStaleness();
+});
 
 /* ---------------- 分段开关 ---------------- */
 function toggleSegmentMode() {
@@ -155,20 +158,31 @@ function addCargoRow(c = {}) {
   ]);
 }
 
-$("btnAddZone").addEventListener("click", () => addZoneRow());
-$("btnAddCargo").addEventListener("click", () => addCargoRow());
+$("btnAddZone").addEventListener("click", () => {
+  addZoneRow();
+  refreshResilienceStaleness();
+});
+$("btnAddCargo").addEventListener("click", () => {
+  addCargoRow();
+  refreshResilienceStaleness();
+});
 document.addEventListener("click", (e) => {
   if (e.target.classList.contains("btn-del-segment")) {
     e.target.closest(".segment-card").remove();
     renumberSegments();
+    refreshResilienceStaleness();
     return;
   }
   if (e.target.classList.contains("btn-add-seg-zone")) {
     const tbody = e.target.closest(".segment-card").querySelector(".seg-zone-rows");
     addZoneRow({}, tbody);
+    refreshResilienceStaleness();
     return;
   }
-  if (e.target.classList.contains("btn-del")) e.target.closest("tr").remove();
+  if (e.target.classList.contains("btn-del")) {
+    e.target.closest("tr").remove();
+    refreshResilienceStaleness();
+  }
 });
 
 /* ---------------- 读取/校验输入 ---------------- */
@@ -452,6 +466,157 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
 }
 
+/* ---------------- 单温区故障容灾评估 ---------------- */
+// 评估绑定的输入快照(JSON 串);输入变化后旧结果标记为已过期
+let resilienceSnapshot = null;
+
+const RISK_LABEL = { high: "高", medium: "中", low: "低" };
+const RISK_ICON = { high: "🔴", medium: "🟡", low: "🟢" };
+
+async function runResilience() {
+  const btn = $("btnResilience");
+  $("errorBox").hidden = true;
+  let payload;
+  try {
+    payload = collectInput();
+  } catch (e) {
+    showError(e.message);
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "评估中…";
+  try {
+    const resp = await fetch("/api/resilience", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || `评估失败(HTTP ${resp.status})`);
+    resilienceSnapshot = JSON.stringify(payload);
+    renderResilience(data);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🛡 容灾评估";
+  }
+}
+
+function renderResilience(data) {
+  $("resultPlaceholder").hidden = true;
+  const view = $("resilienceView");
+  view.hidden = false;
+  view.classList.remove("stale");
+  $("resilienceStale").hidden = true;
+
+  const b = data.baseline;
+  $("resilienceMeta").innerHTML =
+    `基准方案:<strong>${b.boxes_used}</strong> 箱 · 已装 <strong>${fmt(b.loaded_units)}</strong> / ${fmt(b.total_cargo_units)} 件 · ` +
+    `未装 <strong>${fmt(b.unloaded_units)}</strong> 件 · ` +
+    (b.all_transportable
+      ? '<span class="badge badge-ok">✓ 基准全程可运输</span>'
+      : '<span class="badge badge-bad">⚠ 基准存在冲突</span>') +
+    ` · 输入快照 <code>${escapeHtml(data.input_fingerprint)}</code>`;
+
+  const counts = { high: 0, medium: 0, low: 0 };
+  data.scenarios.forEach((s) => counts[s.risk_level]++);
+  $("riskSummary").innerHTML =
+    `<span class="risk-chip">共 ${data.scenarios.length} 个单温区故障场景</span>` +
+    ["high", "medium", "low"]
+      .map((k) => `<span class="risk-chip risk-${k}">${RISK_ICON[k]} ${RISK_LABEL[k]}风险 ${counts[k]}</span>`)
+      .join("");
+
+  const tbody = $("riskRows");
+  tbody.innerHTML = "";
+  data.scenarios.forEach((s) => {
+    const [mainRow, detailRow] = renderScenarioRows(s, b);
+    tbody.appendChild(mainRow);
+    tbody.appendChild(detailRow);
+  });
+}
+
+function renderScenarioRows(s, baseline) {
+  const zoneRange =
+    s.zone.t_min === s.zone.t_max
+      ? `${fmt(s.zone.t_min)}℃`
+      : `${fmt(s.zone.t_min)}~${fmt(s.zone.t_max)}℃`;
+  const reason = s.first_conflict_reason || "—";
+  const tr = document.createElement("tr");
+  tr.className = `risk-row risk-${s.risk_level}`;
+  tr.innerHTML = `
+    <td><span class="risk-badge risk-${s.risk_level}">${RISK_LABEL[s.risk_level]}</span></td>
+    <td>第 ${s.segment_no} 段 · ${escapeHtml(s.segment_name)}</td>
+    <td>${escapeHtml(s.zone_name)} <small class="muted">(${zoneRange})</small></td>
+    <td>${s.still_transportable
+      ? '<span class="heat-text-ok">✓ 可运输</span>'
+      : '<span class="heat-text-bad">✗ 不可全程运输</span>'}</td>
+    <td class="num">${s.newly_unloaded_units
+      ? `<strong class="heat-text-bad">${fmt(s.newly_unloaded_units)}</strong>`
+      : "0"}</td>
+    <td class="num">${s.extra_boxes ? `+${s.extra_boxes}` : "—"}</td>
+    <td class="reason-cell" title="${escapeHtml(reason)}">${escapeHtml(reason)}</td>
+    <td><button type="button" class="btn btn-small btn-diff">基准差异 ▾</button></td>`;
+
+  const newlyList = s.newly_unloaded.length
+    ? `<ul class="diff-list">` +
+      s.newly_unloaded
+        .map(
+          (n) => `<li>#${n.batch_no} ${escapeHtml(n.name)}:基准已装 ${fmt(n.baseline_loaded_units)} 件 → ` +
+            `场景已装 ${fmt(n.scenario_loaded_units)} 件,` +
+            `<strong class="heat-text-bad">新增未装 ${fmt(n.units)} 件</strong></li>`
+        )
+        .join("") +
+      `</ul>`
+    : '<div class="muted">无由已装载变为未装载的批次</div>';
+  const detail = document.createElement("tr");
+  detail.className = "risk-detail";
+  detail.hidden = true;
+  detail.innerHTML = `
+    <td colspan="8">
+      <div class="diff-grid">
+        <div><span class="k">箱数</span>${baseline.boxes_used} → ${s.boxes_used}${s.extra_boxes ? `(+${s.extra_boxes})` : ""}</div>
+        <div><span class="k">已装件数</span>${fmt(baseline.loaded_units)} → ${fmt(s.loaded_units)}</div>
+        <div><span class="k">未装件数</span>${fmt(baseline.unloaded_units)} → ${fmt(s.unloaded_units)}</div>
+      </div>
+      <div class="diff-block">
+        <span class="k">由已装载变为未装载(${s.newly_unloaded.length} 批 / ${fmt(s.newly_unloaded_units)} 件)</span>
+        ${newlyList}
+      </div>
+      <div class="diff-block">
+        <span class="k">首个冲突原因</span>
+        <div>${escapeHtml(s.first_conflict_reason || "无")}</div>
+      </div>
+    </td>`;
+  return [tr, detail];
+}
+
+$("riskRows").addEventListener("click", (e) => {
+  const btn = e.target.closest(".btn-diff");
+  if (!btn) return;
+  const detail = btn.closest("tr").nextElementSibling;
+  const open = detail.hidden;
+  detail.hidden = !open;
+  btn.textContent = open ? "收起 ▴" : "基准差异 ▾";
+});
+
+/* 输入变化后,旧的评估结果标记为已过期(评估绑定同一输入快照) */
+function refreshResilienceStaleness() {
+  if (resilienceSnapshot === null) return;
+  let stale = true;
+  try {
+    stale = JSON.stringify(collectInput()) !== resilienceSnapshot;
+  } catch {
+    stale = true; // 输入暂不完整,视为已变化
+  }
+  $("resilienceStale").hidden = !stale;
+  $("resilienceView").classList.toggle("stale", stale);
+}
+
+$("inputPanel").addEventListener("input", refreshResilienceStaleness);
+$("inputPanel").addEventListener("change", refreshResilienceStaleness);
+$("btnResilience").addEventListener("click", runResilience);
+
 /* ---------------- 提交 ---------------- */
 async function runPlan() {
   const btn = $("btnPlan");
@@ -517,7 +682,8 @@ $("btnSample").addEventListener("click", () => {
   showError("");
   $("errorBox").hidden = true;
   $("resultView").hidden = true;
-  $("resultPlaceholder").hidden = false;
+  $("resultPlaceholder").hidden = !$("resilienceView").hidden;
+  refreshResilienceStaleness();
 });
 
 /* ---------------- 初始空行 ---------------- */
