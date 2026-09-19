@@ -18,6 +18,7 @@
     <div class="actions">
       <button id="btnSample" type="button" class="btn btn-ghost">载入示例</button>
       <button id="btnPlan" type="button" class="btn btn-primary">▶ 生成分箱方案</button>
+      <button id="btnAssess" type="button" class="btn btn-assess">🛡 容灾评估</button>
     </div>
   </header>
 
@@ -105,6 +106,16 @@
 
         <h3 id="unloadedTitle" class="conflict-title" hidden>未能装载的货物与冲突原因</h3>
         <div id="unloaded" class="unloaded-list"></div>
+      </div>
+
+      <!-- ============ 单温区故障容灾评估 ============ -->
+      <div id="assessView" hidden>
+        <h3>单温区故障容灾评估
+          <span id="assessStale" class="stale-badge" hidden>⚠ 输入已变化,结果已过期,请重新评估</span>
+        </h3>
+        <div id="assessMeta" class="assess-meta"></div>
+        <div id="riskMatrix" class="risk-matrix"></div>
+        <div id="scenarioDetail" class="scenario-detail" hidden></div>
       </div>
 
       <div id="errorBox" class="error-box" hidden></div>

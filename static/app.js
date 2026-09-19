@@ -501,6 +501,202 @@ function showError(msg) {
 
 $("btnPlan").addEventListener("click", runPlan);
 
+/* ---------------- 单温区故障容灾评估 ---------------- */
+/* 评估绑定评估时刻的输入快照;任何输入变化都会把旧结果标记为已过期 */
+let assessSnapshot = null; // 评估时 collectInput() 的 JSON 串
+let assessData = null; // 最近一次评估响应
+let activeScenario = null; // 当前展开的场景 key
+
+const scenarioKey = (s) => `${s.segment_no}-${s.zone_index}`;
+
+async function runAssess() {
+  const btn = $("btnAssess");
+  $("errorBox").hidden = true;
+  let payload;
+  try {
+    payload = collectInput();
+  } catch (e) {
+    showError(e.message);
+    return;
+  }
+  btn.disabled = true;
+  btn.textContent = "评估中…";
+  try {
+    const resp = await fetch("/api/zone-failure-assessment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || `评估失败（HTTP ${resp.status}）`);
+    assessSnapshot = JSON.stringify(payload);
+    assessData = data;
+    activeScenario = null;
+    renderAssessment(data);
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "🛡 容灾评估";
+  }
+}
+
+/* 风险等级:不可运输 > 仍可运输但需加箱/有新增未装 > 无影响 */
+function scenarioLevel(s) {
+  if (!s.transportable) return "bad";
+  if (s.extra_boxes > 0 || s.newly_unloaded_units > 0) return "warn";
+  return "ok";
+}
+
+const LEVEL_LABEL = { ok: "✓ 无影响", warn: "⚠ 仍可运输", bad: "✗ 不可运输" };
+
+function renderAssessment(data) {
+  $("resultPlaceholder").hidden = true;
+  $("assessView").hidden = false;
+  $("assessStale").hidden = true;
+  const b = data.baseline;
+  const sm = data.summary;
+  $("assessMeta").innerHTML = `
+    <span class="assess-chip">基准方案: ${b.boxes_used} 箱 · 已装 ${fmt(b.loaded_units)} 件
+      ${b.all_transportable ? "· ✓ 全程可运输" : "· ⚠ 基准已存在冲突"}</span>
+    <span class="assess-chip">场景数: ${sm.scenario_count}</span>
+    <span class="assess-chip ${sm.failed_count ? "chip-bad" : "chip-ok"}">不可运输: ${sm.failed_count}</span>
+    <span class="assess-chip ${sm.max_extra_boxes > 0 ? "chip-warn" : ""}">最大额外箱数: +${fmt(sm.max_extra_boxes)}</span>
+    <span class="assess-chip muted">快照 ${data.input_fingerprint.slice(0, 8)}</span>`;
+
+  /* 风险矩阵:行 = 运输段,列 = 该段各可用温区(按段序、温区序排列) */
+  const bySeg = new Map();
+  data.scenarios.forEach((s) => {
+    if (!bySeg.has(s.segment_no)) bySeg.set(s.segment_no, { name: s.segment_name, cells: [] });
+    bySeg.get(s.segment_no).cells.push(s);
+  });
+  const rows = [...bySeg.entries()]
+    .map(([no, seg]) => {
+      seg.cells.sort((a, b2) => a.zone_index - b2.zone_index);
+      const cells = seg.cells
+        .map((s) => {
+          const lv = scenarioLevel(s);
+          const delta =
+            lv === "ok"
+              ? ""
+              : `<div class="cell-delta">${
+                  s.newly_unloaded_units > 0 ? `未装 ${fmt(s.newly_unloaded_units)} 件` : ""
+                }${s.newly_unloaded_units > 0 && s.extra_boxes > 0 ? " · " : ""}${
+                  s.extra_boxes > 0 ? `+${fmt(s.extra_boxes)} 箱` : ""
+                }</div>`;
+          return `<button type="button" class="risk-cell risk-${lv}" data-key="${scenarioKey(s)}"
+              title="模拟温区「${escapeHtml(s.zone_name)}」不可用">
+            <div class="cell-zone">${escapeHtml(s.zone_name)}</div>
+            <div class="cell-range">${fmt(s.zone.t_min)}~${fmt(s.zone.t_max)}℃</div>
+            <div class="cell-level">${LEVEL_LABEL[lv]}</div>${delta}
+          </button>`;
+        })
+        .join("");
+      return `<div class="matrix-row">
+        <div class="matrix-seg">第 ${no} 段<span>${escapeHtml(seg.name)}</span></div>
+        <div class="matrix-cells">${cells}</div>
+      </div>`;
+    })
+    .join("");
+  $("riskMatrix").innerHTML = `
+    <div class="matrix-head">
+      <span>每个单元格 = 将该温区模拟为不可用后重新规划的结果(点击展开与基准方案的差异)</span>
+      <span class="matrix-legend">
+        <i class="dot dot-ok"></i>无影响 <i class="dot dot-warn"></i>仍可运输
+        <i class="dot dot-bad"></i>不可运输
+      </span>
+    </div>
+    ${rows}`;
+  $("scenarioDetail").hidden = true;
+}
+
+function renderScenarioDetail(s) {
+  const b = assessData.baseline;
+  const unit = assessData.volume_unit;
+  const lv = scenarioLevel(s);
+  const newly = s.newly_unloaded.length
+    ? `<table class="items newly-table">
+        <thead><tr><th>由已装载变为未装载的批次</th><th class="num">件数</th></tr></thead>
+        <tbody>${s.newly_unloaded
+          .map(
+            (n) => `<tr><td>#${n.batch_no} ${escapeHtml(n.name)}</td>
+              <td class="num">${fmt(n.units)} 件</td></tr>`
+          )
+          .join("")}</tbody>
+      </table>`
+    : '<div class="muted detail-none">无批次由已装载变为未装载</div>';
+  const diffRows = [
+    ["使用箱数", `${b.boxes_used}`, `${s.boxes_used}（${s.extra_boxes >= 0 ? "+" : ""}${fmt(s.extra_boxes)}）`],
+    ["已装件数", `${fmt(b.loaded_units)}`, `${fmt(s.loaded_units)}（-${fmt(s.newly_unloaded_units)}）`],
+  ]
+    .map(
+      (r) => `<tr><td>${r[0]}</td><td class="num">${r[1]}</td><td class="num">${r[2]}</td></tr>`
+    )
+    .join("");
+  $("scenarioDetail").innerHTML = `
+    <div class="detail-head">
+      <span class="badge badge-${lv === "ok" ? "ok" : lv === "warn" ? "warn" : "bad"}">${LEVEL_LABEL[lv]}</span>
+      <strong>第 ${s.segment_no} 段「${escapeHtml(s.segment_name)}」 · 温区「${escapeHtml(s.zone_name)}」
+        (${fmt(s.zone.t_min)}~${fmt(s.zone.t_max)}℃) 不可用</strong>
+      <button type="button" class="btn btn-small detail-close">收起</button>
+    </div>
+    <table class="items diff-table">
+      <thead><tr><th>对比项</th><th class="num">基准方案</th><th class="num">故障场景</th></tr></thead>
+      <tbody>${diffRows}</tbody>
+    </table>
+    <div class="detail-sub">新增未装载(共 ${fmt(s.newly_unloaded_units)} 件)</div>
+    ${newly}
+    <div class="detail-sub">首个冲突原因</div>
+    <div class="detail-reason">${s.first_conflict_reason ? escapeHtml(s.first_conflict_reason) : "无(场景仍可全程运输)"}</div>`;
+  $("scenarioDetail").hidden = false;
+}
+
+$("btnAssess").addEventListener("click", runAssess);
+
+/* 矩阵单元格点击:展开/收起基准差异 */
+$("riskMatrix").addEventListener("click", (e) => {
+  const cell = e.target.closest(".risk-cell");
+  if (!cell || !assessData) return;
+  const key = cell.dataset.key;
+  if (activeScenario === key) {
+    activeScenario = null;
+    $("scenarioDetail").hidden = true;
+    cell.classList.remove("active");
+    return;
+  }
+  activeScenario = key;
+  [...$("riskMatrix").querySelectorAll(".risk-cell")].forEach((c) =>
+    c.classList.toggle("active", c.dataset.key === key)
+  );
+  const s = assessData.scenarios.find((x) => scenarioKey(x) === key);
+  if (s) renderScenarioDetail(s);
+});
+
+$("scenarioDetail").addEventListener("click", (e) => {
+  if (e.target.classList.contains("detail-close")) {
+    activeScenario = null;
+    $("scenarioDetail").hidden = true;
+    [...$("riskMatrix").querySelectorAll(".risk-cell")].forEach((c) => c.classList.remove("active"));
+  }
+});
+
+/* 输入变化:旧评估结果标记为已过期(快照比对,恢复原始输入会自动撤销标记) */
+function markAssessmentStale() {
+  if ($("assessView").hidden || assessSnapshot === null) return;
+  let cur = null;
+  try {
+    cur = JSON.stringify(collectInput());
+  } catch (e) {
+    cur = null; // 输入暂时不完整,也视为已变化
+  }
+  $("assessStale").hidden = cur === assessSnapshot;
+}
+document.querySelector(".input-panel").addEventListener("input", markAssessmentStale);
+document.querySelector(".input-panel").addEventListener("click", (e) => {
+  /* 删除行/段等按钮不触发 input 事件,延迟一帧再比对 */
+  if (e.target.closest(".btn")) setTimeout(markAssessmentStale, 0);
+});
+
 $("btnSample").addEventListener("click", () => {
   $("transportHours").value = SAMPLE.transport_hours;
   $("boxCapacity").value = SAMPLE.box_capacity;
@@ -518,6 +714,7 @@ $("btnSample").addEventListener("click", () => {
   $("errorBox").hidden = true;
   $("resultView").hidden = true;
   $("resultPlaceholder").hidden = false;
+  markAssessmentStale();
 });
 
 /* ---------------- 初始空行 ---------------- */
